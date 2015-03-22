@@ -8,12 +8,14 @@ output: html_document
 
 The goal  of this machine learning script is to train the data made gratiously availlable by [groupware@les](http://groupware.les.inf.puc-rio.br/har) in order to predict the outcome of a qualification in 5 clases of an excercise with dumbbells as performed by 6 individuals. The predictors consist mostly of the signas of several sensors attached to the person performing the excercises. Since the number of predictors is reasonable big and we have a classification problem, the choice goes out to a a tree based scheme. An alternative would be a Bayesian neural network, like the algorithm that won the [2003 NIPS price](http://clopinet.com/isabelle/Projects/NIPS2003/analysis.html), but not having enough expertise to carry that out within the limited available time, I resorted to trusted water.  
 
-The plan is the following: I use a classification tree with stochastic boosting (the gbm package) through the caret interface with all features that are left after a first selection based on simple observations. 
+The plan is the following: after splitting off ine quarter of the data for testing the final model, I use a classification tree with stochastic boosting (the gbm package) through the caret interface with all features that are left after a first selection based on simple observations. 
 The resulting relative influence (the relative decrease in the squared error attributed to a predictor) is used as a guide to reduce the set of predictors to a reasonable (in terms of time) featureset size of $42$.  
 
-After this feature set reduction random forest is used. This is also done using the caret package which runs through the parameterset (in this case just one parameter the number of choices per node),using a cross-validation of choice. The default of a $10$-fold cross-validation with a bootstrapped cross validation set, resulted in an accuray and a $\kappa$ (taking sucess caused by random luck into account)of over $99,5\%$, which seems to be more than enough.
+After this feature set reduction random forest is used. This is also done using the caret package which runs through the parameterset (in this case just one parameter the number of choices per node),using a cross-validation of choice. The default of a $10$-fold cross-validation with a bootstrapped cross validation set, resulted in an accuray and a $\kappa$ (taking sucess caused by random luck into account)of over $98\%$, which seems to be more than enough.
 
-Finally the model is tested using the provided test data and it completes this without any error.  After which a neat surprise reveales itself....
+Then the quality of the model is tested using the split off testing set
+
+Finally the model is tested using the coursera provided test data and it completes this without any error.  And then for something completely different....
  
 ## Preprocessing the raw data
 ```{r cache=TRUE}
@@ -22,15 +24,17 @@ library(caret)
 library(doMC) # making use of available cores
 registerDoMC(cores = 3)# change this to the number of cores you want to use
 na <- c('NA','') # added the empty strings to elinate the time window averages
-training <- read.csv(file="pml-training.csv", na.strings=na)
+data <- read.csv(file="pml-training.csv", na.strings=na)
+sel <- createDataPartition(data$classe,p=3/4,list = FALSE)
+training <- data[sel,]
+testing <- data[-sel,]
 ```
 There are a whole bunch of features that only contain averages ove a time period, They will contain NA's 
-Furthermore we get rid of the index column and the timestamps, but will keep the time window number, it turns out to have a high influence. 
+Furthermore we get rid of the index column the timestamps, and the time window number, which will play a montyesque role in the end. 
 
-```{r cache=TRUE}
+```{r cache=TRUE, dependson=-1}
 logic <- apply(training, 2, function(x) sum(is.na(x))==0)
-logic[1]<-FALSE # the index 'X'
-logic[3:6]<-FALSE # the time related features
+logic[1:7]<-FALSE # the time related features
 training<-training[,logic]
 ```
 We do first a rough classification to be able to filter the features based on their influence using gbm
@@ -40,44 +44,77 @@ registerDoMC(cores = 3)
 set.seed(1999) # Prince !
 fit=train(classe~.,data=training, method='gbm',trControl = trainControl(verbose = FALSE))
 ```
-The summary plot shows a barplot of the ordered influences per feature. Note the high influence by the time window number. Note also that the two most influential predictors decrease the miss-classification by almost $40\%$ **in the presence of 54 other features**. That makes you wonder what result we would get doing a randomforest with only those two predictors, their influence should be much higher !!. Anyway I stick for now with the original plan of picking all nonzero influence predictors. 
+The summary plot shows a barplot of the ordered influences per feature. I stick with the original plan of picking all nonzero influence predictors. 
 
-```{r cache=TRUE,dependson=c(-1)}
+```{r, cache=TRUE,dependson=c(-1)}
 summ<-summary(fit)
 print(summ,row.names=FALSE)# pretty print
 ```
 
-Now choose all features with nonzero influence except for the $2$ user_name persons. Their influence is also covered by the time window feature.
-```{r cache=TRUE, dependson=c(-1,-2)}
-entries<-grep('^user',as.character(summ$var)[1:44])
-keep<-as.character(summ$var[1:44])
-keep<-c(keep[!grepl("^user",keep )],"classe")
+```{r, cache=TRUE, dependson=c(-1,-2)}
+keep<-c(as.character(summ$var[1:42]), "classe")
 training<-training[keep]
 ```
 
 ## Training
-That is all the preprocessing needed. Note that most other forms of preprocessing (scaling centering, PCA) are pointless. There is also no fear of overfitting with randomForest. What is more there is no need to use a separate cross-validation step when searching for model parameters. Caret takes care of that it is beautiful! 
+That is all the preprocessing needed. Note that most other forms of preprocessing (scaling centering, PCA) are pointless here and 42 is a symbolic number after all. There is also no fear of overfitting with randomForest. What is more there is no need to use a separate cross-validation step when searching for model parameters. Caret takes care of that it is beautiful! 
 
-```{r cache=TRUE, dependson=c(-1)}
+```{r, cache=TRUE, dependson=c(-1)}
 registerDoMC(cores = 3)
 set.seed(1984)  # Orwell!
 # and there we go, time for coffee
-fit<-train(classe~.,data=training,method='rf')
+fit2<-train(classe~.,data=training,method='rf')
 # a little later we summarize the test results
-print(fit)
-plot(fit)
+print(fit2)
+plot(fit2)
 ```
+
+The accuracy of 98.7 % is reasonable nut perhaps we can do better by using folding instead of bootstrapping.
   
+```{r, cache=TRUE, dependson=c(-1)}
+registerDoMC(cores = 3)
+set.seed(1984)  # Orwell!
+seeds <- vector(mode = "list", length = 11)
+for(i in 1:10) seeds[[i]] <- sample.int(1000, 22)
+## For the last model:
+seeds[[11]] <- sample.int(1000, 1)
+ctrl <- trainControl(method = "cv", 
+                     seeds = seeds)
+# and there we go, time for coffee
+fit3<-train(classe~.,data=training,method='rf',trControl=ctrl,importance = TRUE)
+# a little later we summarize the test results
+print(fit3)
+summary(fit3)
+plot(fit3)
+```
+Note the accuracy, and $\kappa$ of $99\%$! And these are all sort of out of sample errors. They have virtually no bias. Of course it does not suffice since we used all of the training-set data for tuning, thus we need the test sample that has been untouched.
 
-Note the accuracy, and $\kappa$ of more than $99.5\%$! And these are all out of sample errors. They have virtually no bias. Of course it does not suffice since we used all of the training-set data for tuning, thus we need a test sample that has been untouched.
+The plot shows that a number of predictors of $2$ per node optimal is. The standard number of predictors for randomForest is the square root of the number of features or $6-7$ predictors. Tuning was marginally useful ($0.2\%$ accuracy increase)
 
-The plot shows that a number of predictors of $22$ optimal is. The standard number of predictors for randomForest is the square root of the number of features or $6-7$ predictors. Tuning was marginally useful ($0.2\%$ accuracy increase)
+Now we can test, I decided to test all 3 training models , although no conclusion can be drawn from this !!! Otherwise we would bias our result in favor of the testing set. Anyway the testing accuracy's are fine
 
 ## Testing
-```{r cache=TRUE, dependson=c(-1)}
-testing<-read.csv("pml-testing.csv", na.strings=na)
+
+```{r}
+library(caret)
+pred1<-predict(fit,testing)
+pred2<-predict(fit2,testing)
+pred3<-predict(fit3,testing)
+confusionMatrix(pred1,testing$classe)
+confusionMatrix(pred2,testing$classe)
+confusionMatrix(pred3,testing$classe)
+```
+
+
+
+
+
+
+
+```{r, eval = FALSE,cache=TRUE, dependson=c(-2,-3,-4)}
+coursetest<-read.csv("pml-testing.csv", na.strings=na)
 # no need to process since we didn't transform
-pred<-as.character(predict(fit,testing))
+pred<-as.character(predict(fit3,coursetest))
 # the function as provided, why not just in one file, would have been more efficient
 pml_write_files = function(x){
    n = length(x)
@@ -87,29 +124,11 @@ pml_write_files = function(x){
    }
 }
 pml_write_files(pred)
-print(pred)
 ```
-That is a $100% accuracy on the test set,though the test set is rather small, so it might be a good idea to make anyway a separate test set. Based on prior experience... 
+That is a $100\%$ accuracy on the test set,though the test set is rather small, so some luck plays also a role. Wanting to get rid of any luck factor Let us have a look at the dataset a bit more carefully 
 
 ## Surprise
-This I will do using nothing but the **two predictors** with the highest influence which leads to a surprise:
-```{r cache=TRUE, dependson=c(-3)}
-keep<-c(keep[1:2],"classe")
-set.seed(1900) # Bertoluci !
-sel<-createDataPartition(training$classe,p=3/4,list = FALSE)
-totrain<-training[sel,keep]
-totest<-training[-sel,keep]
-fit<- train(classe~.,data=totrain,method='rf')
-pred<-predict(fit,totest)
-```
-Except for not really able to tune anything due to the lack of features (ntree is no option in caret),
-have a look at that confusionmatrix !!!
-```{r cache=TRUE,dependson=c(-1)}
-confusionMatrix(pred,totest$classe)
-```
-The accuracy is as good as one (1 is in the 95 % confidence interval)and for a training run of approximately half a minute using only one core.
-Needless to say that the result on the test set $100\%$ is as well. 
-```{r cache=TRUE,dependson=c(-2)}
-predict(fit,testing)
-```
-Now this is in fact close to cheating because the time windows are short intervals and the chance that the classification changes in a time window is tiny, but we were explicitly allowed to use any of the variables. Clearly this learning algorithm will have fail if the test set and training set would have no overlap in time windows. I rest my case.
+Notice the time window number. The time windows are pretty damn short. It looks as if the the quaity of the movement can never change during such a time frame. A fast check shows this indeed to be the case. What is more, the coursera test data has time intervals that are also in the training set, so we could have gotten the right answers not by training but using a simple lookup method!!!
+
+This is also the reason people reported to have used a low number of features, they inknowingly had the cheating data in their feature selection.
+Now this is in fact close to cheating because the time windows are not usuable for unknow trainings, but we were explicitly allowed to use any of the variables. Clearly this learning algorithm will have to fail if the test set and training set would have no overlap in time windows. I rest my case.
